@@ -20,9 +20,10 @@ def do_one_request(url, timeout=1):
     try:
         resp = urlopen(url, timeout=timeout)
     except Exception as e:
-        resp_queue.put(str(e))
+        resp_queue.put((str(e), -1))
     else:
-        resp_queue.put(str(resp.status))
+        resp_queue.put((str(resp.status), time.time()-start))
+
     sleep = start + timeout - time.time()
     if sleep > 0:
         time.sleep(sleep)
@@ -44,16 +45,20 @@ def main(args):
 
     while running:
         time.sleep(interval)
-        result = defaultdict(int)
+        result = defaultdict(list)
         total = 0
         while not resp_queue.empty():
-            resp = resp_queue.get()
-            result[resp] += 1
+            (res, delta) = resp_queue.get()
+            result[res].append(delta)
             total += 1
 
         line = "total=" + str(total)
         for key in sorted(result.keys()):
-            line += " " + key + "=" + str(result[key])
+            deltas = result[key]
+            line += " "
+            line += key + "=" + str(len(deltas))
+            line += "(%.2f/%.2f/%.2f)" % (
+                max(deltas), min(deltas), sum(deltas)/len(deltas))
         print(line)
 
     for t in threads:
