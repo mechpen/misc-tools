@@ -2,28 +2,41 @@
 
 # setup and connect network namespacess
 
-usage() {
-    echo "Usage:"
-    echo "  $0 init <gw_name> <gw_addr>"
-    echo "  $0 clean <gw_name>"
-    echo "  $0 add <ns_name> <ns_addr> <gw_name>"
-    echo "  $0 del <ns_name>"
+NS_IFNAME=ns0
+NS_IFADDR_SKIP=10
+
+netns_usage() {
+    echo "Basic commands:"
+    echo "  $0 create <name> <gw_addr/prelen> <ns_count>"
+    echo "  $0 delete <name>"
+    echo "Lower level commands:"
+    echo "  $0 create_gw <gw_name> <gw_addr/prelen>"
+    echo "  $0 delete_gw <gw_name>"
+    echo "  $0 create_ns <ns_name> <ns_addr> <gw_name>"
+    echo "  $0 delete_ns <ns_name>"
 }
 
 get_addr() {
-    name=$1
-    no_prefix=$2
+    local name=$1
+    local no_prefix=$2
 
     ip addr show dev $name | awk '/inet /{print $2}'
 }
 
-netns_init() {
-    name=$1
-    if [ -z "$name" ]; then
+get_ns_links() {
+    local name=$1
+
+    ip link show type veth | sed -n -e "s/^[[:digit:]]\+:[[:space:]]*\(${name}_[[:digit:]]\+\)@.*/\1/p"
+}
+
+netns_create_gw() {
+    local name=$1
+    local addr=$2
+    if [ -z "$name" -o -z "$addr" ]; then
 	echo "missing args" >&2
 	exit 1
     fi
-    addr=$2
+    echo ">>> creating gw interface $name addr $addr"
 
     ip link add $name type dummy
     ip addr add $addr dev $name
@@ -33,12 +46,18 @@ netns_init() {
     iptables -t nat -A POSTROUTING -s $addr ! -d $addr -j MASQUERADE
 }
 
-netns_clean() {
-    name=$1
-    addr=$(get_addr $name)
-    if [ -z "$name" -o -z "$addr" ]; then
+netns_delete_gw() {
+    local name=$1
+    if [ -z "$name" ]; then
 	echo "missing args" >&2
 	exit 1
+    fi
+    echo ">>> deleting gw interface $name"
+
+    local addr=$(get_addr $name)
+    if [ -z "$addr" ]; then
+	echo "no address for gw interface $name"
+	exit 2
     fi
 
     ip link del $name
@@ -47,59 +66,99 @@ netns_clean() {
     iptables -t nat -D POSTROUTING -s $addr ! -d $addr -j MASQUERADE
 }
 
-netns_add() {
-    name=$1
-    addr=$2
-    gw=$3
+netns_create_ns() {
+    local name=$1
+    local addr=$2
+    local gw=$3
     if [ -z "$name" -o -z "$addr" -o -z "$gw" ]; then
 	echo "missing args" >&2
 	exit 1
     fi
+    echo ">>> creating ns $name interface $name addr $addr gw $gw"
 
     ip netns add $name
     ip netns exec $name ip link set lo up
 
-    ip link add ${name}0 type veth peer ${name}1
-    ip link set ${name}1 netns $name
-    ip link set ${name}0 up
+    ip link add $name type veth peer $NS_IFNAME
+    ip link set $NS_IFNAME netns $name
+    ip link set $name up
 
-    ip netns exec $name ip link set ${name}1 up
-    ip netns exec $name ip addr add $addr dev ${name}1
+    ip netns exec $name ip link set $NS_IFNAME up
+    ip netns exec $name ip addr add $addr/32 dev $NS_IFNAME
 
-    addr=${addr%/*}
-    ip route add $addr dev ${name}0
+    ip route add $addr dev $name
     gw=$(get_addr $gw)
     gw=${gw%/*}
+    ip netns exec $name ip route add $gw scope link dev $NS_IFNAME
     ip netns exec $name ip route add default via $gw
 }
 
-netns_del() {
-    name=$1
+netns_delete_ns() {
+    local name=$1
+    if [ -z "$name" ]; then
+	echo "missing args" >&2
+	exit 1
+    fi
+    echo ">>> deleting ns $name"
+
+    ip netns del $name
+    ip link del $name
+}
+
+netns_create() {
+    local name=$1
+    local gw=$2
+    local count=$3
+    if [ -z "$name" -o -z "$gw" -o -z "$count" ]; then
+	echo "missing args" >&2
+	exit 1
+    fi
+
+    local i
+    netns_create_gw $name $gw
+    for i in $(seq 1 $count); do
+	i=$((NS_IFADDR_SKIP+$i))
+	local ns_name=${name}_$i
+	local ns_addr=${gw%.*}.$i
+	netns_create_ns $ns_name $ns_addr $name
+    done
+}
+
+netns_delete() {
+    local name=$1
     if [ -z "$name" ]; then
 	echo "missing args" >&2
 	exit 1
     fi
 
-    ip netns del $name
-    ip link del ${name}0
+    for ns_name in $(get_ns_links $name); do
+	netns_delete_ns $ns_name
+    done
+    netns_delete_gw $name
 }
 
 cmd=$1; shift
 
 case $cmd in
-    init)
-	netns_init "$@"
+    create)
+	netns_create "$@"
 	;;
-    clean)
-	netns_clean "$@"
+    delete)
+	netns_delete "$@"
 	;;
-    add)
-	netns_add "$@"
+    create_gw)
+	netns_create_gw "$@"
 	;;
-    del)
-	netns_del "$@"
+    delete_gw)
+	netns_delete_gw "$@"
+	;;
+    create_ns)
+	netns_create_ns "$@"
+	;;
+    delete_ns)
+	netns_delete_ns "$@"
 	;;
     *)
-	usage
+	netns_usage
 	;;
 esac
