@@ -4,7 +4,7 @@
 
 sudo make modules_install
 sudo make headers_install
-sudo cp --backup --suffix=.old arch/x86_64/boot/bzImage /boot/vmlinuz
+sudo cp arch/x86_64/boot/bzImage /boot/vmlinuz
 
 sudo mkinitcpio -p vmlinuz
-sudo mv --backup --suffix=.old /boot/initrd.img /boot/initrd
+sudo mv /boot/initrd.img /boot/initrd
